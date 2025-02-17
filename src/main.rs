@@ -53,27 +53,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tokio::select! {
             _ = interval.tick() => {
                 let updated = sync(&client, &config).await?;
-                if let (Some(updated), Some(last_update)) = (updated, data.last_update) {
-                    if updated > last_update {
+                match (updated, data.last_update, data.update_content) {
+                    (Some(updated), Some(last_update), _) if updated > last_update => {
                         println!("Update Videos");
                         update_videos(&client, &mut config, &mut data, Some(updated)).await?;
-                        mpv.kill().await?;
-                        mpv = start_mpv().await?;
                     }
-                } else if updated.is_some() {
-                    println!("Updated: {:?}", updated);
-                    println!("Data last updated: None");
-                    update_videos(&client, &mut config, &mut data, updated).await?;
-                    mpv.kill().await?;
-                    mpv = start_mpv().await?;
-                } else if data.update_content == Some(true) {
-                    println!("Forced content update triggered.");
-                    update_videos(&client, &mut config, &mut data, None).await?;
-                    mpv.kill().await?;
-                    mpv = start_mpv().await?;
-                } else {
-                    println!("No updates available.");
+                    (Some(updated), None, _) => {
+                        println!("Updated: {:?}", updated);
+                        println!("Data last updated: None");
+                        update_videos(&client, &mut config, &mut data, Some(updated)).await?;
+                    }
+                    (_, _, Some(true)) => {
+                        println!("Forced content update triggered.");
+                        update_videos(&client, &mut config, &mut data, None).await?;
+                    }
+                    _ => {
+                        println!("No updates available.");
+                    }
                 }
+                
+                // Restart MPV in cases where an update occurs
+                if updated.is_some() || data.update_content == Some(true) {
+                    mpv.kill().await?;
+                    mpv = start_mpv().await?;
+                }
+                
 
                 // Restart mpv if it exits
                 match mpv.try_wait() {
