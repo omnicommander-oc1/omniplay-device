@@ -67,6 +67,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     update_videos(&client, &mut config, &mut data, updated).await?;
                     mpv.kill().await?;
                     mpv = start_mpv().await?;
+                } else if data.update_content == Some(true) {
+                    println!("Forced content update triggered.");
+                    update_videos(&client, &mut config, &mut data, None).await?;
+                    mpv.kill().await?;
+                    mpv = start_mpv().await?;
                 } else {
                     println!("No updates available.");
                 }

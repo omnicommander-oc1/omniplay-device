@@ -1,0 +1,19 @@
+[Unit]
+Description=Digital Signage Daemon
+After=graphical.target
+
+[Service]
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+ExecStart=/usr/bin/signaged-util
+User=root
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=signaged-util
+Restart=always
+RestartSec=30s
+KillMode=process
+TimeoutSec=infinity
+
+[Install]
+WantedBy=graphical.target

@@ -8,6 +8,8 @@ use crate::util::{load_json, write_json, Video};
 pub struct Data {
     pub videos: Vec<Video>,
     pub last_update: Option<DateTime<Utc>>,
+    pub current_playlist: Option<Uuid>,
+    pub update_content: Option<bool>,
 }
 impl Data {
     pub fn new() -> Self {
