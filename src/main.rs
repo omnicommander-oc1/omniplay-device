@@ -54,7 +54,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             _ = interval.tick() => {
                 let updated = sync(&client, &config).await?;
                 if let (Some(updated), Some(last_update)) = (updated, data.last_update) {
-
                     if updated > last_update {
                         println!("Update Videos");
                         update_videos(&client, &mut config, &mut data, Some(updated)).await?;
@@ -222,6 +221,7 @@ async fn update_videos(
 ) -> Result<(), Box<dyn Error>> {
     data.videos = receive_videos(client, config).await?;
     data.last_update = updated;
+    data.update_content= Some(false);
     data.write().await?;
     let home = std::env::var("HOME")?;
 
