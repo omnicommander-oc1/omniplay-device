@@ -72,12 +72,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 
-                // Restart MPV in cases where an update occurs
-                if updated.is_some() || data.update_content == Some(true) {
-                    mpv.kill().await?;
-                    mpv = start_mpv().await?;
-                }
-                
+            
 
                 // Restart mpv if it exits
                 match mpv.try_wait() {
