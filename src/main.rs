@@ -41,6 +41,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         update_videos(&client, &mut config, &mut data, updated).await?;
         println!("Data Updated: {:?}", updated);
     }
+    if data.update_content {
+        let updated = sync(&client, &config).await?;
+        update_videos(&client, &mut config, &mut data, updated).await?;
+        println!("Data Updated: {:?}", updated);
+    }
+    
 
     let mut interval = time::interval(Duration::from_secs(20));
     let mut terminate = signal(SignalKind::terminate())?;
@@ -66,6 +72,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     _ => {
                         println!("No updates available.");
                     }
+                }
+                if data.update_content {
+                    let updated = sync(&client, &config).await?;
+                    update_videos(&client, &mut config, &mut data, updated).await?;
+                    println!("Data Updated: {:?}", updated);
                 }
                 
             
