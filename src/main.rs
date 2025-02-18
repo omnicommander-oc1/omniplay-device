@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         update_videos(&client, &mut config, &mut data, updated).await?;
         println!("Data Updated: {:?}", updated);
     }
-    if data.update_content {
+    if data.update_content.unwrap_or(false) {
         let updated = sync(&client, &config).await?;
         update_videos(&client, &mut config, &mut data, updated).await?;
         println!("Data Updated: {:?}", updated);
@@ -73,13 +73,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         println!("No updates available.");
                     }
                 }
-                if data.update_content {
+                
+                if data.update_content.unwrap_or(false) {
                     let updated = sync(&client, &config).await?;
                     update_videos(&client, &mut config, &mut data, updated).await?;
                     println!("Data Updated: {:?}", updated);
                 }
                 
-            
 
                 // Restart mpv if it exits
                 match mpv.try_wait() {
