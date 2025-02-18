@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     (_, _, Some(true)) => {
                         println!("Forced content update triggered.");
-                        update_videos(&client, &mut config, &mut data, None).await?;
+                        update_videos(&client, &mut config, &mut data, Some(updated)).await?;
                     }
                     _ => {
                         println!("No updates available.");
