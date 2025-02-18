@@ -12,7 +12,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new() -> Self {
+    pub fn new() -> Self {githu
         Config::default()
     }
     /// Loads `Config` from $HOME/.config/signage/signage.json
