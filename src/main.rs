@@ -80,6 +80,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("Data Updated: {:?}", updated);
                 }
                 
+                if data.current_playlist != client.playlist_id {
+                    let updated = sync(&client, &config).await?;
+                    update_videos(&client, &mut config, &mut data, updated).await?;
+                    println!("Data Updated: {:?}", updated);
+                }
 
                 // Restart mpv if it exits
                 match mpv.try_wait() {
