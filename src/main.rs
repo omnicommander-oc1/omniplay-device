@@ -215,7 +215,8 @@ async fn receive_videos(
     let message = "==========================================================";
     println!("{}", message);
     if status.is_success() {
-        let res: Vec<Video> = serde_json::from_str(&text)?;
+        let inner_json: String = serde_json::from_str(&text)?;
+        let videos: Vec<Video> = serde_json::from_str(&inner_json)?;
         Ok(res)
     } else {
         Err(format!("Failed to receive videos: {}", text).into())
