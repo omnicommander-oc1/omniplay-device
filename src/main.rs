@@ -195,7 +195,7 @@ async fn receive_videos(
     client: &Client,
     config: &mut Config,
 ) -> Result<Vec<Video>, Box<dyn Error>> {
-    let url = format!("{}/recieve-videos/{}", config.url, config.id, config.asset_order);
+    let url = format!("{}/recieve-videos/{}", config.url, config.id);
 
     let new_key = get_new_key(client, config).await?;
     let auth_token = new_key.key;
