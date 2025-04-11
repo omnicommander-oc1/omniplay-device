@@ -225,6 +225,7 @@ async fn update_videos(
     updated: Option<DateTime<Utc>>,
 ) -> Result<(), Box<dyn Error>> {
     data.videos = receive_videos(client, config).await?;
+    println!("{:#?}", data.videos);
     data.videos.sort_by_key(|v| v.asset_order);
     data.last_update = updated;
     data.update_content= Some(false);
