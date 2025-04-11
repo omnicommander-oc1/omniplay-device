@@ -21,7 +21,6 @@ pub struct Apikey {
 pub struct Video {
     pub id: String,
     pub asset_url: String,
-    pub asset_order: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
