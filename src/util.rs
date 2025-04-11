@@ -22,7 +22,7 @@ pub struct Video {
     pub id: String,
     pub asset_url: String,
     #[serde(default)]
-    pub asset_order: String,
+    pub asset_order: u8,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
