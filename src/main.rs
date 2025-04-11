@@ -211,9 +211,6 @@ async fn receive_videos(
 
     let status = response.status();
     let text = response.text().await?;
-    println!("{:#?}", text);
-    let message = "==========================================================";
-    println!("{}", message);
     if status.is_success() {
         
         let res: Vec<Video> = serde_json::from_str(&text)?;
@@ -230,6 +227,8 @@ async fn update_videos(
     updated: Option<DateTime<Utc>>,
 ) -> Result<(), Box<dyn Error>> {
     data.videos = receive_videos(client, config).await?;
+    data.videos.sort_by_key(|v| v.asset_order);
+
     println!("{:#?}",  data.videos);
     let message = "==========================================================  Reduced";
     println!("{}", message);
