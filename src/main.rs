@@ -195,7 +195,7 @@ async fn receive_videos(
     client: &Client,
     config: &mut Config,
 ) -> Result<Vec<Video>, Box<dyn Error>> {
-    let url = format!("{}/recieve-videos/{}", config.url, config.id);
+    let url = format!("{}/recieve-videos/{}", config.url, config.id, config.asset_order);
 
     let new_key = get_new_key(client, config).await?;
     let auth_token = new_key.key;
@@ -227,7 +227,7 @@ async fn update_videos(
     updated: Option<DateTime<Utc>>,
 ) -> Result<(), Box<dyn Error>> {
     data.videos = receive_videos(client, config).await?;
-    println!("{:#?}", data.videos);
+    println!("{:#?}", videos);
     let message = "==========================================================";
     println!("{}", message);
     data.last_update = updated;
