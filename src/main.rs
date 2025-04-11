@@ -229,7 +229,9 @@ async fn update_videos(
     updated: Option<DateTime<Utc>>,
 ) -> Result<(), Box<dyn Error>> {
     data.videos = receive_videos(client, config).await?;
-
+    println!("{:#?}",  data.videos);
+    let message = "==========================================================  Reduced";
+    println!("{}", message);
     data.last_update = updated;
     data.update_content= Some(false);
     data.write().await?;
