@@ -169,8 +169,10 @@ async fn get_new_key(client: &Client, config: &mut Config) -> Result<Apikey, Box
         .await?;
 
     println!("Raw API response: {}", res_text);
+
     let res: Apikey = serde_json::from_str(&res_text)?;
     println!("Received new API key: {}", res.key);
+
     config.key = Some(res.key.clone());
     config.write().await?;
     Ok(res)
@@ -225,8 +227,6 @@ async fn update_videos(
     updated: Option<DateTime<Utc>>,
 ) -> Result<(), Box<dyn Error>> {
     data.videos = receive_videos(client, config).await?;
-    println!("{:#?}", data.videos);
-    data.videos.sort_by_key(|v| v.asset_order);
     data.last_update = updated;
     data.update_content= Some(false);
     data.write().await?;
