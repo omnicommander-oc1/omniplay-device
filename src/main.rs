@@ -7,7 +7,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{self, Duration};
-use util::{cleanup_directory, set_display, Apikey, Updated, Video};
+use util::{cleanup_directory, set_display, Apikey, Updated, Video, ClientTimelineScheduleResponse};
+use uuid::Uuid;
 
 mod config;
 mod data;
@@ -48,7 +49,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     
 
-    let mut interval = time::interval(Duration::from_secs(20));
+    // Initialize with default polling interval
+    let mut poll_interval = Duration::from_secs(60);
+    let mut interval = time::interval(poll_interval);
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut hup = signal(SignalKind::hangup())?;
@@ -58,37 +61,82 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                let updated = sync(&client, &config).await?;
-                match (updated, data.last_update, data.update_content) {
-                    (Some(updated), Some(last_update), _) if updated > last_update => {
-                        println!("Update Videos");
-                        update_videos(&client, &mut config, &mut data, Some(updated)).await?;
+                println!("\n=== Checking for updates ===");
+                let mut content_updated = false;
+                
+                // Try new schedule-aware system first
+                match check_timeline_schedule(&client, &config).await {
+                    Ok(schedule_response) => {
+                        println!("✅ Using timeline schedule system");
+                        
+                        // Process the schedule response
+                        content_updated = process_schedule_response(
+                            &client, 
+                            &mut config, 
+                            &mut data, 
+                            schedule_response.clone()
+                        ).await?;
+                        
+                        // Calculate optimal polling interval based on schedule timing
+                        let new_interval = calculate_poll_interval(&schedule_response);
+                        if new_interval != poll_interval {
+                            poll_interval = new_interval;
+                            interval = time::interval(poll_interval);
+                            println!("📊 Updated polling interval to {:?}", poll_interval);
+                        }
                     }
-                    (Some(updated), None, _) => {
-                        println!("Updated: {:?}", updated);
-                        println!("Data last updated: None");
-                        update_videos(&client, &mut config, &mut data, Some(updated)).await?;
-                    }
-                    _ => {
-                        println!("No updates available.");
+                    Err(err) => {
+                        println!("⚠️ Schedule check failed: {}, falling back to legacy sync", err);
+                        
+                        // Fall back to legacy sync system
+                        let updated = sync(&client, &config).await?;
+                        match (updated, data.last_update, data.update_content) {
+                            (Some(updated), Some(last_update), _) if updated > last_update => {
+                                println!("🔄 Legacy update detected");
+                                update_videos(&client, &mut config, &mut data, Some(updated)).await?;
+                                content_updated = true;
+                            }
+                            (Some(updated), None, _) => {
+                                println!("🔄 Legacy initial update");
+                                update_videos(&client, &mut config, &mut data, Some(updated)).await?;
+                                content_updated = true;
+                            }
+                            _ => {
+                                println!("📋 No legacy updates available");
+                            }
+                        }
+                        
+                        // Check legacy update_content flag
+                        if data.update_content.unwrap_or(false) {
+                            let updated = sync(&client, &config).await?;
+                            update_videos(&client, &mut config, &mut data, updated).await?;
+                            content_updated = true;
+                            println!("🔄 Legacy content flag update");
+                        }
+                        
+                        // Use default polling for legacy fallback
+                        if poll_interval != Duration::from_secs(20) {
+                            poll_interval = Duration::from_secs(20);
+                            interval = time::interval(poll_interval);
+                            println!("📊 Using legacy polling interval: 20s");
+                        }
                     }
                 }
                 
-                if data.update_content.unwrap_or(false) {
-                    let updated = sync(&client, &config).await?;
-                    update_videos(&client, &mut config, &mut data, updated).await?;
-                    println!("Data Updated: {:?}", updated);
+                if content_updated {
+                    println!("✅ Content updated successfully");
+                } else {
+                    println!("📋 No content changes needed");
                 }
-                
-
 
                 // Restart mpv if it exits
                 match mpv.try_wait() {
                     Ok(Some(_)) => {
                         mpv = start_mpv().await?;
+                        println!("🎬 Restarted mpv process");
                     },
                     Ok(None) => (),
-                    Err(error) => eprintln!("Error waiting for mpv process: {error}"),
+                    Err(error) => eprintln!("❌ Error waiting for mpv process: {error}"),
                 }
 
                 // Avoid restarting mpv too frequently
@@ -256,5 +304,168 @@ async fn update_videos(
             .await?;
     }
     cleanup_directory(&format!("{}/.local/share/signage", home)).await?;
+    Ok(())
+}
+
+// ============================================================================
+// NEW TIMELINE SCHEDULE FUNCTIONS
+// ============================================================================
+
+/// Check timeline schedule and update flags from the server
+async fn check_timeline_schedule(
+    client: &Client,
+    config: &Config,
+) -> Result<ClientTimelineScheduleResponse, Box<dyn Error>> {
+    let url = format!("{}/client-timeline-schedule/{}", config.url, config.id);
+    
+    let response = client
+        .get(&url)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let schedule_response: ClientTimelineScheduleResponse = response.json().await?;
+        println!("Timeline Schedule Response: {:?}", schedule_response);
+        Ok(schedule_response)
+    } else {
+        Err(format!("Failed to get timeline schedule: {}", response.status()).into())
+    }
+}
+
+/// Determine if playlist needs updating based on schedule response
+fn playlist_changed(
+    current_playlist: Option<Uuid>, 
+    schedule_response: &ClientTimelineScheduleResponse
+) -> (bool, Option<Uuid>) {
+    // Convert string UUIDs from API to Uuid for comparison
+    let active_playlist_uuid = schedule_response.active_playlist_id
+        .as_ref()
+        .and_then(|s| s.parse::<Uuid>().ok());
+    
+    let changed = current_playlist != active_playlist_uuid;
+    (changed, active_playlist_uuid)
+}
+
+/// Calculate optimal polling interval based on schedule timing
+fn calculate_poll_interval(schedule_response: &ClientTimelineScheduleResponse) -> Duration {
+    let now = Utc::now();
+    
+    // Check if current schedule is ending soon
+    if let Some(schedule_ends) = schedule_response.schedule_ends_at {
+        let seconds_until_end = (schedule_ends - now).num_seconds();
+        if seconds_until_end > 0 && seconds_until_end < 300 { // Less than 5 minutes
+            println!("Schedule ending in {} seconds, polling frequently", seconds_until_end);
+            return Duration::from_secs(10); // Poll every 10 seconds
+        }
+    }
+    
+    // Check if next schedule is starting soon
+    if let Some(next_starts) = schedule_response.next_schedule_starts_at {
+        let seconds_until_start = (next_starts - now).num_seconds();
+        if seconds_until_start > 0 && seconds_until_start < 300 { // Less than 5 minutes
+            println!("Next schedule starting in {} seconds, polling frequently", seconds_until_start);
+            return Duration::from_secs(10); // Poll every 10 seconds
+        }
+    }
+    
+    // Check if any update flags are set
+    if schedule_response.update_flags.playlist_update_needed ||
+       schedule_response.update_flags.schedule_update_needed ||
+       schedule_response.update_flags.content_update_needed {
+        println!("Update flags detected, polling more frequently");
+        return Duration::from_secs(20); // Poll every 20 seconds when updates pending
+    }
+    
+    // Default polling interval - no changes expected soon
+    Duration::from_secs(60) // Poll every minute
+}
+
+/// Process schedule response and update data if needed
+async fn process_schedule_response(
+    client: &Client,
+    config: &mut Config,
+    data: &mut Data,
+    schedule_response: ClientTimelineScheduleResponse,
+) -> Result<bool, Box<dyn Error>> {
+    let (playlist_changed, new_playlist) = playlist_changed(data.current_playlist, &schedule_response);
+    let mut content_updated = false;
+    
+    // Update data with schedule information
+    data.active_schedule_ends = schedule_response.schedule_ends_at;
+    data.next_schedule_starts = schedule_response.next_schedule_starts_at;
+    data.next_playlist_id = schedule_response.next_playlist_id
+        .as_ref()
+        .and_then(|s| s.parse::<Uuid>().ok());
+    data.fallback_playlist = schedule_response.fallback_playlist_id
+        .as_ref()
+        .and_then(|s| s.parse::<Uuid>().ok());
+    data.last_schedule_check = Some(Utc::now());
+    
+    // Check if we need to update content
+    let needs_content_update = playlist_changed || 
+                              schedule_response.update_flags.playlist_update_needed ||
+                              schedule_response.update_flags.content_update_needed;
+    
+    if needs_content_update {
+        println!("Content update needed - playlist changed: {}, flags: {:?}", 
+                playlist_changed, schedule_response.update_flags);
+        
+        // Update current playlist
+        data.current_playlist = new_playlist;
+        
+        // Fetch and update content
+        let updated = sync(client, config).await?;
+        update_videos(client, config, data, updated).await?;
+        
+        // Acknowledge the updates
+        acknowledge_updates(client, config, &schedule_response.update_flags).await?;
+        
+        content_updated = true;
+        println!("Content successfully updated for playlist: {:?}", new_playlist);
+    } else {
+        println!("No content update needed - playlist: {:?}, flags: {:?}", 
+                data.current_playlist, schedule_response.update_flags);
+    }
+    
+    // Always save the updated schedule information
+    data.write().await?;
+    
+    Ok(content_updated)
+}
+
+/// Acknowledge processed updates to the server
+async fn acknowledge_updates(
+    client: &Client,
+    config: &Config,
+    update_flags: &util::ClientUpdateFlagsResponse,
+) -> Result<(), Box<dyn Error>> {
+    if !update_flags.playlist_update_needed && 
+       !update_flags.schedule_update_needed && 
+       !update_flags.content_update_needed {
+        return Ok(()); // Nothing to acknowledge
+    }
+    
+    let url = format!("{}/client-acknowledge-updates/{}", config.url, config.id);
+    
+    let payload = serde_json::json!({
+        "playlist_updated": update_flags.playlist_update_needed,
+        "schedule_updated": update_flags.schedule_update_needed,
+        "content_updated": update_flags.content_update_needed
+    });
+    
+    let response = client
+        .post(&url)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .json(&payload)
+        .send()
+        .await?;
+    
+    if response.status().is_success() {
+        println!("Successfully acknowledged updates");
+    } else {
+        println!("Failed to acknowledge updates: {}", response.status());
+    }
+    
     Ok(())
 }

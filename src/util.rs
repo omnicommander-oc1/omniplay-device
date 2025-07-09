@@ -30,6 +30,23 @@ pub struct Updated {
     pub updated: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClientTimelineScheduleResponse {
+    pub active_playlist_id: Option<String>,
+    pub fallback_playlist_id: Option<String>,
+    pub schedule_ends_at: Option<DateTime<Utc>>,
+    pub next_schedule_starts_at: Option<DateTime<Utc>>,
+    pub next_playlist_id: Option<String>,
+    pub update_flags: ClientUpdateFlagsResponse,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClientUpdateFlagsResponse {
+    pub playlist_update_needed: bool,
+    pub schedule_update_needed: bool,
+    pub content_update_needed: bool,
+}
+
 impl Video {
     /// Downloads videos or images to `$HOME/.local/share/signage`
     pub async fn download(&self, client: &Client) -> Result<String, Box<dyn std::error::Error>> {

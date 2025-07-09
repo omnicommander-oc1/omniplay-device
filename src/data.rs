@@ -9,7 +9,12 @@ pub struct Data {
     pub videos: Vec<Video>,
     pub last_update: Option<DateTime<Utc>>,
     pub current_playlist: Option<Uuid>,
+    pub active_schedule_ends: Option<DateTime<Utc>>,
+    pub next_schedule_starts: Option<DateTime<Utc>>,
+    pub next_playlist_id: Option<Uuid>,
+    pub fallback_playlist: Option<Uuid>,
     pub update_content: Option<bool>,
+    pub last_schedule_check: Option<DateTime<Utc>>,
 }
 impl Data {
     pub fn new() -> Self {
