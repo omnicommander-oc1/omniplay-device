@@ -125,6 +125,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 
                 if content_updated {
                     println!("✅ Content updated successfully");
+                    
+                    // Force MPV restart to pick up new playlist immediately
+                    println!("🔄 Restarting MPV to load new playlist...");
+                    mpv.kill().await?;
+                    mpv = start_mpv().await?;
+                    println!("🎬 MPV restarted with new playlist");
                 } else {
                     println!("📋 No content changes needed");
                 }
@@ -260,11 +266,44 @@ async fn receive_videos(
     let status = response.status();
     let text = response.text().await?;
     if status.is_success() {
-        
+        println!("Raw response: {}", text);
         let res: Vec<Video> = serde_json::from_str(&text)?;
         Ok(res)
     } else {
         Err(format!("Failed to receive videos: {}", text).into())
+    }
+}
+
+/// Receive videos for a specific playlist (schedule-aware)
+async fn receive_videos_for_playlist(
+    client: &Client,
+    config: &mut Config,
+    playlist_id: Uuid,
+) -> Result<Vec<Video>, Box<dyn Error>> {
+    let url = format!("{}/playlists/{}/videos", config.url, playlist_id);
+    println!("🌐 Fetching videos from: {}", url);
+
+    let new_key = get_new_key(client, config).await?;
+    let auth_token = new_key.key;
+    let response = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .header("Cache-Control", "no-cache")
+        .header("Accept-Encoding", "gzip, deflate, br")
+        .header("Connection", "keep-alive")
+        .header("APIKEY", auth_token)
+        .send()
+        .await?;
+
+    let status = response.status();
+    let text = response.text().await?;
+    if status.is_success() {
+        println!("📋 Raw playlist response: {}", text);
+        let res: Vec<Video> = serde_json::from_str(&text)?;
+        println!("✅ Successfully parsed {} videos for playlist {}", res.len(), playlist_id);
+        Ok(res)
+    } else {
+        Err(format!("Failed to receive videos for playlist {}: {} - {}", playlist_id, status, text).into())
     }
 }
 
@@ -304,6 +343,55 @@ async fn update_videos(
             .await?;
     }
     cleanup_directory(&format!("{}/.local/share/signage", home)).await?;
+    Ok(())
+}
+
+/// Update videos for a specific playlist ID (schedule-aware)
+async fn update_videos_for_playlist(
+    client: &Client,
+    config: &mut Config,
+    data: &mut Data,
+    playlist_id: Uuid,
+) -> Result<(), Box<dyn Error>> {
+    println!("🎵 Fetching videos for playlist: {}", playlist_id);
+    
+    // Fetch videos for the specific playlist
+    data.videos = receive_videos_for_playlist(client, config, playlist_id).await?;
+    data.videos.sort_by_key(|v| v.asset_order);
+
+    println!("📋 Received {} videos for playlist {}", data.videos.len(), playlist_id);
+    println!("{:#?}", data.videos);
+    
+    data.last_update = Some(Utc::now());
+    data.update_content = Some(false);
+    data.write().await?;
+    
+    let home = std::env::var("HOME")?;
+
+    // Remove existing playlist file
+    if Path::new(&format!("{home}/.local/share/signage/playlist.txt")).try_exists()? {
+        tokio::fs::remove_file(format!("{home}/.local/share/signage/playlist.txt")).await?;
+    }
+
+    // Create new playlist file
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(format!("{home}/.local/share/signage/playlist.txt"))
+        .await?;
+
+    // Download and add videos to playlist
+    for video in data.videos.clone() {
+        if !video.in_whitelist() {
+            continue;
+        }
+        let file_path = video.download(client).await?;
+        file.write_all(format!("{}\n", file_path).as_bytes())
+            .await?;
+    }
+    
+    cleanup_directory(&format!("{}/.local/share/signage", home)).await?;
+    println!("✅ Playlist updated successfully for playlist: {}", playlist_id);
     Ok(())
 }
 
@@ -374,10 +462,15 @@ fn calculate_poll_interval(schedule_response: &ClientTimelineScheduleResponse) -
        schedule_response.update_flags.schedule_update_needed ||
        schedule_response.update_flags.content_update_needed {
         println!("Update flags detected, polling more frequently");
-        return Duration::from_secs(20); // Poll every 20 seconds when updates pending
+        return Duration::from_secs(5); // Poll every 5 seconds when updates pending
     }
     
-    // Default polling interval - no changes expected soon
+    // Check if we have active or upcoming schedules (poll more frequently during active periods)
+    if schedule_response.schedule_ends_at.is_some() || schedule_response.next_schedule_starts_at.is_some() {
+        return Duration::from_secs(30); // Poll every 30 seconds when schedules are active
+    }
+    
+    // Default polling interval - no schedules active
     Duration::from_secs(60) // Poll every minute
 }
 
@@ -414,9 +507,21 @@ async fn process_schedule_response(
         // Update current playlist
         data.current_playlist = new_playlist;
         
-        // Fetch and update content
-        let updated = sync(client, config).await?;
-        update_videos(client, config, data, updated).await?;
+        // Fetch and update content based on active playlist
+        if let Some(playlist_id) = new_playlist {
+            println!("🎵 Fetching videos for active playlist: {}", playlist_id);
+            // Use schedule-aware video fetching for specific playlist
+            update_videos_for_playlist(client, config, data, playlist_id).await?;
+        } else if let Some(fallback_playlist_id) = data.fallback_playlist {
+            println!("🔄 No active playlist, using fallback playlist: {}", fallback_playlist_id);
+            // Use fallback playlist if no active schedule
+            update_videos_for_playlist(client, config, data, fallback_playlist_id).await?;
+        } else {
+            println!("⚠️ No active or fallback playlist available, falling back to legacy sync");
+            // Fall back to legacy sync if no playlist is available
+            let updated = sync(client, config).await?;
+            update_videos(client, config, data, updated).await?;
+        }
         
         // Acknowledge the updates
         acknowledge_updates(client, config, &schedule_response.update_flags).await?;
