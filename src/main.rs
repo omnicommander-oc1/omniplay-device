@@ -7,16 +7,71 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{self, Duration};
-use util::{cleanup_directory, set_display, Apikey, Updated, Video, ClientTimelineScheduleResponse};
+use util::{cleanup_directory, set_display, Apikey, Updated, Video, ClientTimelineScheduleResponse, ClientUpdateFlagsResponse};
 use uuid::Uuid;
 
 mod config;
 mod data;
 mod util;
 
+/// Kill any existing MPV processes to prevent conflicts
+async fn cleanup_mpv_processes() -> Result<(), Box<dyn Error>> {
+    println!("🧹 Cleaning up any existing MPV processes...");
+    
+    // Kill all MPV processes
+    let output = Command::new("pkill")
+        .args(&["-f", "mpv"])
+        .output()
+        .await;
+    
+    match output {
+        Ok(result) => {
+            if result.status.success() {
+                println!("✅ MPV processes cleaned up successfully");
+            } else {
+                println!("ℹ️ No existing MPV processes found to clean up");
+            }
+        }
+        Err(e) => {
+            println!("⚠️ Failed to clean up MPV processes: {}", e);
+            // Don't fail the whole process, just log the warning
+        }
+    }
+    
+    // Give a small delay to ensure processes are fully terminated
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    
+    Ok(())
+}
+
+/// Comprehensive cleanup at startup to ensure clean state
+async fn startup_cleanup() -> Result<(), Box<dyn Error>> {
+    println!("🧹 Performing startup cleanup...");
+    
+    // Kill all MPV processes
+    cleanup_mpv_processes().await?;
+    
+    // Clean up any stale socket files
+    let socket_path = "/tmp/mpvsocket";
+    if Path::new(socket_path).exists() {
+        if let Err(e) = tokio::fs::remove_file(socket_path).await {
+            println!("⚠️ Failed to remove stale socket file: {}", e);
+        } else {
+            println!("✅ Removed stale socket file");
+        }
+    }
+    
+    println!("✅ Startup cleanup completed");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     set_display();
+    
+    // Perform comprehensive cleanup at startup
+    startup_cleanup().await?;
+    
     let mut config = Config::new();
     let mut data = Data::new();
     let client = Client::new();
@@ -27,8 +82,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Loaded configuration: {:?}", config);
     println!("Loading data...");
     data.load().await?;
-
-    let mut mpv = start_mpv().await?;
 
     let _ = wait_for_api(&client, &config).await?;
 
@@ -56,7 +109,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut hup = signal(SignalKind::hangup())?;
 
-    mpv.kill().await?;
+    let mut mpv = start_mpv().await?;
 
     loop {
         tokio::select! {
@@ -189,6 +242,9 @@ async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn 
 }
 
 async fn start_mpv() -> Result<Child, Box<dyn Error>> {
+    // Clean up any existing MPV processes first
+    cleanup_mpv_processes().await?;
+    
     let image_display_duration = 10;
     let child = Command::new("mpv")
         .arg("--loop-playlist=inf")
