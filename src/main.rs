@@ -274,38 +274,7 @@ async fn receive_videos(
     }
 }
 
-/// Receive videos for a specific playlist (schedule-aware)
-async fn receive_videos_for_playlist(
-    client: &Client,
-    config: &mut Config,
-    playlist_id: Uuid,
-) -> Result<Vec<Video>, Box<dyn Error>> {
-    let url = format!("{}/playlists/{}/videos", config.url, playlist_id);
-    println!("🌐 Fetching videos from: {}", url);
-
-    let new_key = get_new_key(client, config).await?;
-    let auth_token = new_key.key;
-    let response = client
-        .get(&url)
-        .header("Accept", "application/json")
-        .header("Cache-Control", "no-cache")
-        .header("Accept-Encoding", "gzip, deflate, br")
-        .header("Connection", "keep-alive")
-        .header("APIKEY", auth_token)
-        .send()
-        .await?;
-
-    let status = response.status();
-    let text = response.text().await?;
-    if status.is_success() {
-        println!("📋 Raw playlist response: {}", text);
-        let res: Vec<Video> = serde_json::from_str(&text)?;
-        println!("✅ Successfully parsed {} videos for playlist {}", res.len(), playlist_id);
-        Ok(res)
-    } else {
-        Err(format!("Failed to receive videos for playlist {}: {} - {}", playlist_id, status, text).into())
-    }
-}
+// Removed: receive_videos_for_playlist - using legacy endpoint instead
 
 async fn update_videos(
     client: &Client,
@@ -346,54 +315,7 @@ async fn update_videos(
     Ok(())
 }
 
-/// Update videos for a specific playlist ID (schedule-aware)
-async fn update_videos_for_playlist(
-    client: &Client,
-    config: &mut Config,
-    data: &mut Data,
-    playlist_id: Uuid,
-) -> Result<(), Box<dyn Error>> {
-    println!("🎵 Fetching videos for playlist: {}", playlist_id);
-    
-    // Fetch videos for the specific playlist
-    data.videos = receive_videos_for_playlist(client, config, playlist_id).await?;
-    data.videos.sort_by_key(|v| v.asset_order);
-
-    println!("📋 Received {} videos for playlist {}", data.videos.len(), playlist_id);
-    println!("{:#?}", data.videos);
-    
-    data.last_update = Some(Utc::now());
-    data.update_content = Some(false);
-    data.write().await?;
-    
-    let home = std::env::var("HOME")?;
-
-    // Remove existing playlist file
-    if Path::new(&format!("{home}/.local/share/signage/playlist.txt")).try_exists()? {
-        tokio::fs::remove_file(format!("{home}/.local/share/signage/playlist.txt")).await?;
-    }
-
-    // Create new playlist file
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(format!("{home}/.local/share/signage/playlist.txt"))
-        .await?;
-
-    // Download and add videos to playlist
-    for video in data.videos.clone() {
-        if !video.in_whitelist() {
-            continue;
-        }
-        let file_path = video.download(client).await?;
-        file.write_all(format!("{}\n", file_path).as_bytes())
-            .await?;
-    }
-    
-    cleanup_directory(&format!("{}/.local/share/signage", home)).await?;
-    println!("✅ Playlist updated successfully for playlist: {}", playlist_id);
-    Ok(())
-}
+// Removed: update_videos_for_playlist - using legacy endpoint instead
 
 // ============================================================================
 // NEW TIMELINE SCHEDULE FUNCTIONS
@@ -507,27 +429,15 @@ async fn process_schedule_response(
         // Update current playlist
         data.current_playlist = new_playlist;
         
-        // Fetch and update content based on active playlist
-        if let Some(playlist_id) = new_playlist {
-            println!("🎵 Fetching videos for active playlist: {}", playlist_id);
-            // Use schedule-aware video fetching for specific playlist
-            update_videos_for_playlist(client, config, data, playlist_id).await?;
-        } else if let Some(fallback_playlist_id) = data.fallback_playlist {
-            println!("🔄 No active playlist, using fallback playlist: {}", fallback_playlist_id);
-            // Use fallback playlist if no active schedule
-            update_videos_for_playlist(client, config, data, fallback_playlist_id).await?;
-        } else {
-            println!("⚠️ No active or fallback playlist available, falling back to legacy sync");
-            // Fall back to legacy sync if no playlist is available
-            let updated = sync(client, config).await?;
-            update_videos(client, config, data, updated).await?;
-        }
+        // Always use the legacy endpoint which works for both scheduled and direct playlists
+        let updated = sync(client, config).await?;
+        update_videos(client, config, data, updated).await?;
         
         // Acknowledge the updates
         acknowledge_updates(client, config, &schedule_response.update_flags).await?;
         
         content_updated = true;
-        println!("Content successfully updated for playlist: {:?}", new_playlist);
+        println!("Content successfully updated");
     } else {
         println!("No content update needed - playlist: {:?}, flags: {:?}", 
                 data.current_playlist, schedule_response.update_flags);
