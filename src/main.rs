@@ -404,13 +404,20 @@ fn playlist_changed(
     current_playlist: Option<Uuid>, 
     schedule_response: &ClientTimelineScheduleResponse
 ) -> (bool, Option<Uuid>) {
-    // Convert string UUIDs from API to Uuid for comparison
-    let active_playlist_uuid = schedule_response.active_playlist_id
-        .as_ref()
-        .and_then(|s| s.parse::<Uuid>().ok());
+    // Determine the effective playlist to use
+    let effective_playlist = if let Some(active_id) = &schedule_response.active_playlist_id {
+        // Use active playlist if available
+        active_id.parse::<Uuid>().ok()
+    } else if let Some(fallback_id) = &schedule_response.fallback_playlist_id {
+        // Use fallback playlist if no active playlist
+        fallback_id.parse::<Uuid>().ok()
+    } else {
+        // No playlist available
+        None
+    };
     
-    let changed = current_playlist != active_playlist_uuid;
-    (changed, active_playlist_uuid)
+    let changed = current_playlist != effective_playlist;
+    (changed, effective_playlist)
 }
 
 /// Calculate optimal polling interval based on schedule timing
