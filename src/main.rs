@@ -404,19 +404,29 @@ fn playlist_changed(
     current_playlist: Option<Uuid>, 
     schedule_response: &ClientTimelineScheduleResponse
 ) -> (bool, Option<Uuid>) {
+    println!("🔍 Checking playlist changes:");
+    println!("  Current playlist: {:?}", current_playlist);
+    println!("  Active playlist ID: {:?}", schedule_response.active_playlist_id);
+    println!("  Fallback playlist ID: {:?}", schedule_response.fallback_playlist_id);
+    
     // Determine the effective playlist to use
     let effective_playlist = if let Some(active_id) = &schedule_response.active_playlist_id {
         // Use active playlist if available
+        println!("  ✅ Using ACTIVE playlist: {}", active_id);
         active_id.parse::<Uuid>().ok()
     } else if let Some(fallback_id) = &schedule_response.fallback_playlist_id {
         // Use fallback playlist if no active playlist
+        println!("  🔄 Using FALLBACK playlist: {}", fallback_id);
         fallback_id.parse::<Uuid>().ok()
     } else {
         // No playlist available
+        println!("  ❌ No playlist available (neither active nor fallback)");
         None
     };
     
     let changed = current_playlist != effective_playlist;
+    println!("  📊 Playlist changed: {} (from {:?} to {:?})", changed, current_playlist, effective_playlist);
+    
     (changed, effective_playlist)
 }
 
@@ -466,6 +476,7 @@ async fn process_schedule_response(
     data: &mut Data,
     schedule_response: ClientTimelineScheduleResponse,
 ) -> Result<bool, Box<dyn Error>> {
+    println!("📋 Processing schedule response...");
     let (playlist_changed, new_playlist) = playlist_changed(data.current_playlist, &schedule_response);
     let mut content_updated = false;
     
@@ -480,17 +491,24 @@ async fn process_schedule_response(
         .and_then(|s| s.parse::<Uuid>().ok());
     data.last_schedule_check = Some(Utc::now());
     
+    println!("📊 Schedule state:");
+    println!("  Active ends at: {:?}", data.active_schedule_ends);
+    println!("  Next starts at: {:?}", data.next_schedule_starts);
+    println!("  Next playlist: {:?}", data.next_playlist_id);
+    println!("  Fallback playlist: {:?}", data.fallback_playlist);
+    
     // Check if we need to update content
     let needs_content_update = playlist_changed || 
                               schedule_response.update_flags.playlist_update_needed ||
                               schedule_response.update_flags.content_update_needed;
     
     if needs_content_update {
-        println!("Content update needed - playlist changed: {}, flags: {:?}", 
+        println!("🔄 Content update needed - playlist changed: {}, flags: {:?}", 
                 playlist_changed, schedule_response.update_flags);
         
         // Update current playlist
         data.current_playlist = new_playlist;
+        println!("🎬 Setting current playlist to: {:?}", data.current_playlist);
         
         // Always use the legacy endpoint which works for both scheduled and direct playlists
         let updated = sync(client, config).await?;
@@ -500,9 +518,9 @@ async fn process_schedule_response(
         acknowledge_updates(client, config, &schedule_response.update_flags).await?;
         
         content_updated = true;
-        println!("Content successfully updated");
+        println!("✅ Content successfully updated");
     } else {
-        println!("No content update needed - playlist: {:?}, flags: {:?}", 
+        println!("📋 No content update needed - playlist: {:?}, flags: {:?}", 
                 data.current_playlist, schedule_response.update_flags);
     }
     
