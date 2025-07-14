@@ -7,7 +7,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{self, Duration};
-use util::{cleanup_directory, set_display, Apikey, Updated, Video, ClientTimelineScheduleResponse, ClientUpdateFlagsResponse};
+use util::{cleanup_directory, set_display, Apikey, Updated, Video, ClientTimelineScheduleResponse};
 use uuid::Uuid;
 
 mod config;
