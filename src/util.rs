@@ -49,6 +49,7 @@ pub struct ClientUpdateFlagsResponse {
     pub content_update_needed: bool,
     pub layout_change: bool,
     pub current_layout: Option<String>,
+    pub current_rotation: Option<i32>,
 }
 
 impl Video {
