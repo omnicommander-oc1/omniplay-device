@@ -353,9 +353,7 @@ async fn get_initial_rotation(client: &Client, config: &Config) -> i32 {
     0 // Default to no rotation
 }
 
-async fn start_mpv() -> Result<Child, Box<dyn Error>> {
-    start_mpv_with_rotation(0).await
-}
+
 
 async fn start_mpv_with_rotation(rotation_degrees: i32) -> Result<Child, Box<dyn Error>> {
     // Clean up any existing MPV processes first
