@@ -14,67 +14,22 @@ mod config;
 mod data;
 mod util;
 
-/// Handle layout changes by applying MPV rotation settings
-async fn apply_layout_change(layout: &str) -> Result<(), Box<dyn Error>> {
-    println!("🔄 Applying layout change to: {}", layout);
-    
+/// Handle layout changes by determining the correct rotation
+fn get_rotation_for_layout(layout: &str) -> i32 {
     match layout {
         "single" => {
-            println!("📺 Setting display to horizontal mode (single)");
-            // Set horizontal display (0 degrees rotation)
-            apply_mpv_rotation(0).await?;
+            println!("📺 Layout set to horizontal mode (single)");
+            0 // No rotation for horizontal
         },
         "single-vertical" => {
-            println!("📱 Setting display to vertical mode (single-vertical)");
-            // Set vertical display (90 degrees rotation)
-            apply_mpv_rotation(90).await?;
+            println!("📱 Layout set to vertical mode (single-vertical)");
+            90 // 90 degrees for vertical
         },
         _ => {
             println!("⚠️ Unknown layout: {}, defaulting to horizontal", layout);
-            apply_mpv_rotation(0).await?;
+            0 // Default to no rotation
         }
     }
-    
-    Ok(())
-}
-
-/// Apply rotation to MPV using IPC commands
-async fn apply_mpv_rotation(degrees: i32) -> Result<(), Box<dyn Error>> {
-    println!("🔄 Applying MPV rotation: {} degrees", degrees);
-    
-    // Connect to MPV socket and send rotation command
-    let rotate_command = format!(r#"{{"command": ["set_property", "video-rotate", {}]}}"#, degrees);
-    
-    match tokio::fs::write("/tmp/mpv_rotate_cmd", &rotate_command).await {
-        Ok(_) => {
-            // Send command to MPV via IPC socket
-            let result = Command::new("sh")
-                .arg("-c")
-                .arg("echo '{\"command\": [\"set_property\", \"video-rotate\", ".to_owned() + &degrees.to_string() + "]}' | socat - /tmp/mpvsocket")
-                .output()
-                .await;
-                
-            match result {
-                Ok(output) => {
-                    if output.status.success() {
-                        println!("✅ MPV rotation applied successfully");
-                    } else {
-                        println!("⚠️ MPV rotation command may have failed: {}", String::from_utf8_lossy(&output.stderr));
-                    }
-                },
-                Err(e) => {
-                    println!("❌ Failed to send rotation command to MPV: {}", e);
-                    return Err(e.into());
-                }
-            }
-        },
-        Err(e) => {
-            println!("❌ Failed to write rotation command: {}", e);
-            return Err(e.into());
-        }
-    }
-    
-    Ok(())
 }
 
 /// Acknowledge layout update to the API
@@ -210,7 +165,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         println!("✅ Using timeline schedule system");
                         
                         // Process the schedule response
-                        content_updated = process_schedule_response(
+                        let (content_update_needed, mpv_restart_needed) = process_schedule_response(
                             &client, 
                             &mut config, 
                             &mut data, 
@@ -224,6 +179,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             interval = time::interval(poll_interval);
                             println!("📊 Updated polling interval to {:?}", poll_interval);
                         }
+
+                        // If MPV needs restart, restart it
+                        if mpv_restart_needed {
+                            println!("🔄 MPV needs restart due to changes. Restarting...");
+                            mpv.kill().await?;
+                            
+                            // Determine the correct rotation based on current layout
+                            let rotation_degrees = if let Some(layout) = &data.current_layout {
+                                get_rotation_for_layout(layout)
+                            } else {
+                                0 // Default to no rotation
+                            };
+                            
+                            mpv = start_mpv_with_rotation(rotation_degrees).await?;
+                            println!("🎬 MPV restarted with rotation: {} degrees", rotation_degrees);
+                        }
+                        content_updated = content_update_needed;
                     }
                     Err(err) => {
                         println!("⚠️ Schedule check failed: {}, falling back to legacy sync", err);
@@ -329,12 +301,16 @@ async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn 
 }
 
 async fn start_mpv() -> Result<Child, Box<dyn Error>> {
+    start_mpv_with_rotation(0).await
+}
+
+async fn start_mpv_with_rotation(rotation_degrees: i32) -> Result<Child, Box<dyn Error>> {
     // Clean up any existing MPV processes first
     cleanup_mpv_processes().await?;
     
     let image_display_duration = 10;
-    let child = Command::new("mpv")
-        .arg("--loop-playlist=inf")
+    let mut cmd = Command::new("mpv");
+    cmd.arg("--loop-playlist=inf")
         .arg("--volume=-1")
         .arg("--no-terminal")
         .arg("--fullscreen")
@@ -346,9 +322,17 @@ async fn start_mpv() -> Result<Child, Box<dyn Error>> {
         .arg(format!(
             "--playlist={}/.local/share/signage/playlist.txt",
             std::env::var("HOME")?
-        ))
-        .spawn()?;
-
+        ));
+    
+    // Add rotation if specified
+    if rotation_degrees != 0 {
+        cmd.arg(format!("--video-rotate={}", rotation_degrees));
+        println!("🔄 Starting MPV with rotation: {} degrees", rotation_degrees);
+    } else {
+        println!("📺 Starting MPV with no rotation (horizontal)");
+    }
+    
+    let child = cmd.spawn()?;
     Ok(child)
 }
 
@@ -562,10 +546,11 @@ async fn process_schedule_response(
     config: &mut Config,
     data: &mut Data,
     schedule_response: ClientTimelineScheduleResponse,
-) -> Result<bool, Box<dyn Error>> {
+) -> Result<(bool, bool), Box<dyn Error>> {
     println!("📋 Processing schedule response...");
     let (playlist_changed, new_playlist) = playlist_changed(data.current_playlist, &schedule_response);
     let mut content_updated = false;
+    let mut mpv_restart_needed = false;
     
     // Update data with schedule information
     data.active_schedule_ends = schedule_response.schedule_ends_at;
@@ -605,6 +590,7 @@ async fn process_schedule_response(
         acknowledge_updates(client, config, &schedule_response.update_flags).await?;
         
         content_updated = true;
+        mpv_restart_needed = true; // Content changes require MPV restart
         println!("✅ Content successfully updated");
     } else {
         println!("📋 No content update needed - playlist: {:?}, flags: {:?}", 
@@ -627,23 +613,21 @@ async fn process_schedule_response(
             let layout_actually_changed = data.layout_applied.as_ref() != Some(layout);
             
             if layout_actually_changed {
-                // Apply the layout change
-                match apply_layout_change(layout).await {
-                    Ok(()) => {
-                        println!("✅ Layout change applied successfully");
-                        
-                        // Update our tracking data
-                        data.current_layout = Some(layout.clone());
-                        data.layout_applied = Some(layout.clone());
-                        
-                        // Acknowledge the layout update to the API
-                        if let Err(e) = acknowledge_layout_update(client, config).await {
-                            println!("⚠️ Failed to acknowledge layout update: {}", e);
-                        }
-                    },
-                    Err(e) => {
-                        println!("❌ Failed to apply layout change: {}", e);
-                    }
+                let rotation_degrees = get_rotation_for_layout(layout);
+                println!("🔄 Layout requires rotation: {} degrees", rotation_degrees);
+                
+                // Update our tracking data
+                data.current_layout = Some(layout.clone());
+                data.layout_applied = Some(layout.clone());
+                
+                // Set flag to restart MPV with new rotation
+                mpv_restart_needed = true;
+                
+                // Acknowledge the layout update to the API
+                if let Err(e) = acknowledge_layout_update(client, config).await {
+                    println!("⚠️ Failed to acknowledge layout update: {}", e);
+                } else {
+                    println!("✅ Layout change will be applied on MPV restart");
                 }
             } else {
                 println!("📋 Layout is the same as currently applied ({}), acknowledging without reapplying", layout);
@@ -666,10 +650,9 @@ async fn process_schedule_response(
                 // If we've never applied a layout before, apply it now
                 if data.layout_applied.is_none() {
                     println!("🔄 Initial layout setup: applying {}", layout);
-                    if let Ok(()) = apply_layout_change(layout).await {
-                        data.layout_applied = Some(layout.clone());
-                        println!("✅ Initial layout applied successfully");
-                    }
+                    data.layout_applied = Some(layout.clone());
+                    mpv_restart_needed = true; // Need to restart with proper rotation
+                    println!("✅ Initial layout will be applied on MPV restart");
                 }
             }
         }
@@ -678,7 +661,7 @@ async fn process_schedule_response(
     // Always save the updated schedule information
     data.write().await?;
     
-    Ok(content_updated)
+    Ok((content_updated, mpv_restart_needed))
 }
 
 /// Acknowledge processed updates to the server
