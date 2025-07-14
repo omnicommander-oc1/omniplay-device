@@ -152,6 +152,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     
 
+    // Get initial rotation from API before starting MPV
+    let initial_rotation = get_initial_rotation(&client, &config).await;
+    
+    // Store the initial rotation in data for future use
+    data.current_rotation = Some(initial_rotation);
+    data.rotation_applied = Some(initial_rotation);
+    data.write().await?;
+    
     // Initialize with default polling interval
     let mut poll_interval = Duration::from_secs(60);
     let mut interval = time::interval(poll_interval);
@@ -159,7 +167,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut hup = signal(SignalKind::hangup())?;
 
-    let mut mpv = start_mpv().await?;
+    let mut mpv = start_mpv_with_rotation(initial_rotation).await?;
 
     loop {
         tokio::select! {
@@ -249,8 +257,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     // Force MPV restart to pick up new playlist immediately
                     println!("🔄 Restarting MPV to load new playlist...");
                     mpv.kill().await?;
-                    mpv = start_mpv().await?;
-                    println!("🎬 MPV restarted with new playlist");
+                    
+                    // Use current rotation when restarting MPV
+                    let rotation_degrees = if let Some(rotation) = data.current_rotation {
+                        get_rotation_for_device(rotation)
+                    } else {
+                        0 // Default to no rotation
+                    };
+                    
+                    mpv = start_mpv_with_rotation(rotation_degrees).await?;
+                    println!("🎬 MPV restarted with new playlist and rotation: {} degrees", rotation_degrees);
                 } else {
                     println!("📋 No content changes needed");
                 }
@@ -258,8 +274,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Restart mpv if it exits
                 match mpv.try_wait() {
                     Ok(Some(_)) => {
-                        mpv = start_mpv().await?;
-                        println!("🎬 Restarted mpv process");
+                        // Use current rotation when restarting MPV
+                        let rotation_degrees = if let Some(rotation) = data.current_rotation {
+                            get_rotation_for_device(rotation)
+                        } else {
+                            0 // Default to no rotation
+                        };
+                        
+                        mpv = start_mpv_with_rotation(rotation_degrees).await?;
+                        println!("🎬 Restarted mpv process with rotation: {} degrees", rotation_degrees);
                     },
                     Ok(None) => (),
                     Err(error) => eprintln!("❌ Error waiting for mpv process: {error}"),
@@ -306,6 +329,28 @@ async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn 
         interval.tick().await;
     }
     Ok(true)
+}
+
+/// Fetch the initial rotation setting from the API
+async fn get_initial_rotation(client: &Client, config: &Config) -> i32 {
+    println!("🔍 Fetching initial rotation setting from API...");
+    
+    match check_timeline_schedule(client, config).await {
+        Ok(schedule_response) => {
+            if let Some(rotation) = schedule_response.rotation {
+                let rotation_degrees = get_rotation_for_device(rotation);
+                println!("✅ Initial rotation from API: {} degrees", rotation_degrees);
+                return rotation_degrees;
+            } else {
+                println!("📺 No rotation setting found in API, using default (0 degrees)");
+            }
+        }
+        Err(err) => {
+            println!("⚠️ Failed to fetch initial rotation from API: {}, using default (0 degrees)", err);
+        }
+    }
+    
+    0 // Default to no rotation
 }
 
 async fn start_mpv() -> Result<Child, Box<dyn Error>> {
