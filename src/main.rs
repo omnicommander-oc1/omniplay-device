@@ -14,6 +14,93 @@ mod config;
 mod data;
 mod util;
 
+/// Handle layout changes by applying MPV rotation settings
+async fn apply_layout_change(layout: &str) -> Result<(), Box<dyn Error>> {
+    println!("🔄 Applying layout change to: {}", layout);
+    
+    match layout {
+        "single" => {
+            println!("📺 Setting display to horizontal mode (single)");
+            // Set horizontal display (0 degrees rotation)
+            apply_mpv_rotation(0).await?;
+        },
+        "single-vertical" => {
+            println!("📱 Setting display to vertical mode (single-vertical)");
+            // Set vertical display (90 degrees rotation)
+            apply_mpv_rotation(90).await?;
+        },
+        _ => {
+            println!("⚠️ Unknown layout: {}, defaulting to horizontal", layout);
+            apply_mpv_rotation(0).await?;
+        }
+    }
+    
+    Ok(())
+}
+
+/// Apply rotation to MPV using IPC commands
+async fn apply_mpv_rotation(degrees: i32) -> Result<(), Box<dyn Error>> {
+    println!("🔄 Applying MPV rotation: {} degrees", degrees);
+    
+    // Connect to MPV socket and send rotation command
+    let rotate_command = format!(r#"{{"command": ["set_property", "video-rotate", {}]}}"#, degrees);
+    
+    match tokio::fs::write("/tmp/mpv_rotate_cmd", &rotate_command).await {
+        Ok(_) => {
+            // Send command to MPV via IPC socket
+            let result = Command::new("sh")
+                .arg("-c")
+                .arg("echo '{\"command\": [\"set_property\", \"video-rotate\", ".to_owned() + &degrees.to_string() + "]}' | socat - /tmp/mpvsocket")
+                .output()
+                .await;
+                
+            match result {
+                Ok(output) => {
+                    if output.status.success() {
+                        println!("✅ MPV rotation applied successfully");
+                    } else {
+                        println!("⚠️ MPV rotation command may have failed: {}", String::from_utf8_lossy(&output.stderr));
+                    }
+                },
+                Err(e) => {
+                    println!("❌ Failed to send rotation command to MPV: {}", e);
+                    return Err(e.into());
+                }
+            }
+        },
+        Err(e) => {
+            println!("❌ Failed to write rotation command: {}", e);
+            return Err(e.into());
+        }
+    }
+    
+    Ok(())
+}
+
+/// Acknowledge layout update to the API
+async fn acknowledge_layout_update(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
+    let url = format!("{}/client-acknowledge-updates/{}", config.url, config.id);
+    
+    let payload = serde_json::json!({
+        "layout_updated": true
+    });
+    
+    let response = client
+        .post(&url)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .json(&payload)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        println!("✅ Layout update acknowledged to API");
+    } else {
+        println!("⚠️ Failed to acknowledge layout update: {}", response.status());
+    }
+    
+    Ok(())
+}
+
 /// Kill any existing MPV processes to prevent conflicts
 async fn cleanup_mpv_processes() -> Result<(), Box<dyn Error>> {
     println!("🧹 Cleaning up any existing MPV processes...");
@@ -524,6 +611,70 @@ async fn process_schedule_response(
                 data.current_playlist, schedule_response.update_flags);
     }
     
+    // Check for layout changes
+    if schedule_response.update_flags.layout_change {
+        println!("🔄 Layout change detected!");
+        
+        // Get the new layout from the response
+        let new_layout = schedule_response.update_flags.current_layout
+            .as_ref()
+            .or(schedule_response.layout.as_ref());
+            
+        if let Some(layout) = new_layout {
+            println!("📱 Applying new layout: {}", layout);
+            
+            // Check if this is actually a different layout than what we have applied
+            let layout_actually_changed = data.layout_applied.as_ref() != Some(layout);
+            
+            if layout_actually_changed {
+                // Apply the layout change
+                match apply_layout_change(layout).await {
+                    Ok(()) => {
+                        println!("✅ Layout change applied successfully");
+                        
+                        // Update our tracking data
+                        data.current_layout = Some(layout.clone());
+                        data.layout_applied = Some(layout.clone());
+                        
+                        // Acknowledge the layout update to the API
+                        if let Err(e) = acknowledge_layout_update(client, config).await {
+                            println!("⚠️ Failed to acknowledge layout update: {}", e);
+                        }
+                    },
+                    Err(e) => {
+                        println!("❌ Failed to apply layout change: {}", e);
+                    }
+                }
+            } else {
+                println!("📋 Layout is the same as currently applied ({}), acknowledging without reapplying", layout);
+                
+                // Still acknowledge to clear the flag even if layout didn't actually change
+                if let Err(e) = acknowledge_layout_update(client, config).await {
+                    println!("⚠️ Failed to acknowledge layout update: {}", e);
+                }
+            }
+        } else {
+            println!("⚠️ Layout change flag set but no layout provided in response");
+        }
+    } else {
+        // Update current layout tracking even if no change flag (for initialization)
+        if let Some(layout) = schedule_response.layout.as_ref() {
+            if data.current_layout.as_ref() != Some(layout) {
+                println!("📱 Updating current layout tracking to: {}", layout);
+                data.current_layout = Some(layout.clone());
+                
+                // If we've never applied a layout before, apply it now
+                if data.layout_applied.is_none() {
+                    println!("🔄 Initial layout setup: applying {}", layout);
+                    if let Ok(()) = apply_layout_change(layout).await {
+                        data.layout_applied = Some(layout.clone());
+                        println!("✅ Initial layout applied successfully");
+                    }
+                }
+            }
+        }
+    }
+    
     // Always save the updated schedule information
     data.write().await?;
     
@@ -565,3 +716,4 @@ async fn acknowledge_updates(
     
     Ok(())
 }
+

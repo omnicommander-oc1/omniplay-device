@@ -15,6 +15,8 @@ pub struct Data {
     pub fallback_playlist: Option<Uuid>,
     pub update_content: Option<bool>,
     pub last_schedule_check: Option<DateTime<Utc>>,
+    pub current_layout: Option<String>,
+    pub layout_applied: Option<String>, // Track the last layout that was successfully applied
 }
 impl Data {
     pub fn new() -> Self {
