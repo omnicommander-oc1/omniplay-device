@@ -14,19 +14,27 @@ mod config;
 mod data;
 mod util;
 
-/// Handle layout changes by determining the correct rotation
-fn get_rotation_for_layout(layout: &str) -> i32 {
-    match layout {
-        "single" => {
-            println!("📺 Layout set to horizontal mode (single)");
-            0 // No rotation for horizontal
+/// Handle rotation changes by determining the correct rotation
+fn get_rotation_for_device(rotation: i32) -> i32 {
+    match rotation {
+        0 => {
+            println!("📺 Device rotation set to 0 degrees");
+            0
         },
-        "single-vertical" => {
-            println!("📱 Layout set to vertical mode (single-vertical)");
-            90 // 90 degrees for vertical
+        90 => {
+            println!("📱 Device rotation set to 90 degrees");
+            90
+        },
+        180 => {
+            println!("🔄 Device rotation set to 180 degrees");
+            180
+        },
+        270 => {
+            println!("🔄 Device rotation set to 270 degrees");
+            270
         },
         _ => {
-            println!("⚠️ Unknown layout: {}, defaulting to horizontal", layout);
+            println!("⚠️ Invalid rotation: {}, defaulting to 0 degrees", rotation);
             0 // Default to no rotation
         }
     }
@@ -185,9 +193,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             println!("🔄 MPV needs restart due to changes. Restarting...");
                             mpv.kill().await?;
                             
-                            // Determine the correct rotation based on current layout
-                            let rotation_degrees = if let Some(layout) = &data.current_layout {
-                                get_rotation_for_layout(layout)
+                            // Determine the correct rotation based on current rotation setting
+                            let rotation_degrees = if let Some(rotation) = data.current_rotation {
+                                get_rotation_for_device(rotation)
                             } else {
                                 0 // Default to no rotation
                             };
@@ -597,51 +605,55 @@ async fn process_schedule_response(
                 data.current_playlist, schedule_response.update_flags);
     }
     
-    // Check for layout changes
+    // Check for layout/rotation changes
     if schedule_response.update_flags.layout_change {
-        println!("🔄 Layout change detected!");
+        println!("🔄 Layout/rotation change detected!");
         
-        // Get the new layout from the response
+        // Get the new layout and rotation from the response
         let new_layout = schedule_response.update_flags.current_layout
             .as_ref()
             .or(schedule_response.layout.as_ref());
+        let new_rotation = schedule_response.rotation;
             
+        // Handle layout changes
         if let Some(layout) = new_layout {
             println!("📱 Applying new layout: {}", layout);
+            data.current_layout = Some(layout.clone());
+            data.layout_applied = Some(layout.clone());
+        }
+        
+        // Handle rotation changes
+        if let Some(rotation) = new_rotation {
+            println!("🔄 Applying new rotation: {} degrees", rotation);
             
-            // Check if this is actually a different layout than what we have applied
-            let layout_actually_changed = data.layout_applied.as_ref() != Some(layout);
+            // Check if this is actually a different rotation than what we have applied
+            let rotation_actually_changed = data.rotation_applied != Some(rotation);
             
-            if layout_actually_changed {
-                let rotation_degrees = get_rotation_for_layout(layout);
-                println!("🔄 Layout requires rotation: {} degrees", rotation_degrees);
+            if rotation_actually_changed {
+                let rotation_degrees = get_rotation_for_device(rotation);
+                println!("🔄 Rotation requires MPV restart: {} degrees", rotation_degrees);
                 
                 // Update our tracking data
-                data.current_layout = Some(layout.clone());
-                data.layout_applied = Some(layout.clone());
+                data.current_rotation = Some(rotation);
+                data.rotation_applied = Some(rotation);
                 
                 // Set flag to restart MPV with new rotation
                 mpv_restart_needed = true;
                 
-                // Acknowledge the layout update to the API
-                if let Err(e) = acknowledge_layout_update(client, config).await {
-                    println!("⚠️ Failed to acknowledge layout update: {}", e);
-                } else {
-                    println!("✅ Layout change will be applied on MPV restart");
-                }
+                println!("✅ Rotation change will be applied on MPV restart");
             } else {
-                println!("📋 Layout is the same as currently applied ({}), acknowledging without reapplying", layout);
-                
-                // Still acknowledge to clear the flag even if layout didn't actually change
-                if let Err(e) = acknowledge_layout_update(client, config).await {
-                    println!("⚠️ Failed to acknowledge layout update: {}", e);
-                }
+                println!("📋 Rotation is the same as currently applied ({}), no restart needed", rotation);
             }
+        }
+        
+        // Acknowledge the layout/rotation update to the API
+        if let Err(e) = acknowledge_layout_update(client, config).await {
+            println!("⚠️ Failed to acknowledge layout/rotation update: {}", e);
         } else {
-            println!("⚠️ Layout change flag set but no layout provided in response");
+            println!("✅ Layout/rotation update acknowledged");
         }
     } else {
-        // Update current layout tracking even if no change flag (for initialization)
+        // Update current layout/rotation tracking even if no change flag (for initialization)
         if let Some(layout) = schedule_response.layout.as_ref() {
             if data.current_layout.as_ref() != Some(layout) {
                 println!("📱 Updating current layout tracking to: {}", layout);
@@ -651,8 +663,21 @@ async fn process_schedule_response(
                 if data.layout_applied.is_none() {
                     println!("🔄 Initial layout setup: applying {}", layout);
                     data.layout_applied = Some(layout.clone());
+                }
+            }
+        }
+        
+        if let Some(rotation) = schedule_response.rotation {
+            if data.current_rotation != Some(rotation) {
+                println!("🔄 Updating current rotation tracking to: {} degrees", rotation);
+                data.current_rotation = Some(rotation);
+                
+                // If we've never applied a rotation before, apply it now
+                if data.rotation_applied.is_none() {
+                    println!("🔄 Initial rotation setup: applying {} degrees", rotation);
+                    data.rotation_applied = Some(rotation);
                     mpv_restart_needed = true; // Need to restart with proper rotation
-                    println!("✅ Initial layout will be applied on MPV restart");
+                    println!("✅ Initial rotation will be applied on MPV restart");
                 }
             }
         }

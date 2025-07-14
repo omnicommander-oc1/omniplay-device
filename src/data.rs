@@ -17,6 +17,8 @@ pub struct Data {
     pub last_schedule_check: Option<DateTime<Utc>>,
     pub current_layout: Option<String>,
     pub layout_applied: Option<String>, // Track the last layout that was successfully applied
+    pub current_rotation: Option<i32>,
+    pub rotation_applied: Option<i32>, // Track the last rotation that was successfully applied
 }
 impl Data {
     pub fn new() -> Self {

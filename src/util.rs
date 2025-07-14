@@ -39,6 +39,7 @@ pub struct ClientTimelineScheduleResponse {
     pub next_playlist_id: Option<String>,
     pub update_flags: ClientUpdateFlagsResponse,
     pub layout: Option<String>,
+    pub rotation: Option<i32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
