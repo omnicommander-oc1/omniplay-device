@@ -117,6 +117,12 @@ async fn startup_cleanup() -> Result<(), Box<dyn Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Add --version flag support
+    if std::env::args().any(|arg| arg == "--version") {
+        println!("v1.0.0");
+        std::process::exit(0);
+    }
+
     set_display();
     
     // Perform comprehensive cleanup at startup
