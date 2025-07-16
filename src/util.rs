@@ -48,6 +48,11 @@ pub struct ClientUpdateFlagsResponse {
     pub schedule_update_needed: bool,
     pub content_update_needed: bool,
     pub layout_change: bool,
+    pub binary_update_needed: bool,
+    pub signaged_binary_url: Option<String>,
+    pub signaged_util_binary_url: Option<String>,
+    pub binary_version: Option<String>,
+    pub binary_checksum: Option<String>,
     pub current_layout: Option<String>,
     pub current_rotation: Option<i32>,
 }
@@ -184,4 +189,58 @@ pub fn set_display() {
         Ok(val) => println!("DISPLAY is set to: {}", val),
         Err(e) => println!("Couldn't read DISPLAY: {}", e),
     }
+}
+
+/// Downloads a binary file to a temporary directory for device updates
+pub async fn download_binary(
+    client: &Client,
+    url: &str,
+    filename: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // Create temp directory for binary downloads
+    let temp_dir = format!("{}/.local/share/signage/temp", std::env::var("HOME")?);
+    tokio::fs::create_dir_all(&temp_dir).await?;
+    
+    let file_path = format!("{}/{}", temp_dir, filename);
+    
+    println!("📥 Downloading binary from: {}", url);
+    println!("📁 Saving to: {}", file_path);
+    
+    // Download the file
+    let mut stream = client.get(url).send().await?.bytes_stream();
+    let mut file = File::create(&file_path).await?;
+    
+    let mut total_bytes = 0;
+    while let Some(content) = stream.next().await {
+        let chunk = content?;
+        total_bytes += chunk.len();
+        tokio::io::copy(&mut chunk.as_ref(), &mut file).await?;
+    }
+    
+    println!("✅ Binary downloaded successfully: {} bytes", total_bytes);
+    println!("📁 Binary saved to: {}", file_path);
+    
+    Ok(file_path)
+}
+
+/// Calculate SHA256 checksum of a file
+pub async fn calculate_checksum(file_path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    use sha2::{Sha256, Digest};
+    use tokio::fs::File;
+    use tokio::io::AsyncReadExt;
+    
+    let mut file = File::open(file_path).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 8192];
+    
+    loop {
+        let n = file.read(&mut buffer).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    
+    let result = hasher.finalize();
+    Ok(format!("{:x}", result))
 }

@@ -19,6 +19,10 @@ pub struct Data {
     pub layout_applied: Option<String>, // Track the last layout that was successfully applied
     pub current_rotation: Option<i32>,
     pub rotation_applied: Option<i32>, // Track the last rotation that was successfully applied
+    pub binary_update_needed: Option<bool>,
+    pub binary_version: Option<String>,
+    pub binary_downloaded: Option<bool>, // Track if binary has been downloaded to temp directory
+    pub binary_download_path: Option<String>, // Path where binary was downloaded
 }
 impl Data {
     pub fn new() -> Self {
