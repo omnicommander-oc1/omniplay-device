@@ -119,10 +119,13 @@ async fn startup_cleanup() -> Result<(), Box<dyn Error>> {
 async fn main() -> Result<(), Box<dyn Error>> {
     // Add --version flag support
     if std::env::args().any(|arg| arg == "--version") {
-        println!("v1.0.0");
+        println!("Signaged");
+        println!("  Version: {}", env!("CARGO_PKG_VERSION"));
+        println!("  Git: {} ({})", env!("GIT_VERSION"), env!("GIT_HASH"));
+        println!("  Built: {}", env!("BUILD_TIME"));
         std::process::exit(0);
     }
-
+    
     set_display();
     
     // Perform comprehensive cleanup at startup
