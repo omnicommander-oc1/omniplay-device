@@ -128,6 +128,9 @@ pub async fn load_json<T: Serialize + DeserializeOwned>(
     Ok(())
 }
 
+// Note: This function is used by signage-client-service for system metrics,
+// but not by the main signage-client. Kept for potential future use.
+#[allow(dead_code)]
 pub async fn run_command(
     command: &str,
     args: &[&str],
@@ -192,6 +195,9 @@ pub fn set_display() {
 }
 
 /// Downloads a binary file to a temporary directory for device updates
+/// Note: Binary updates are handled by the separate signaged-updater component,
+/// but this function is kept for potential future use.
+#[allow(dead_code)]
 pub async fn download_binary(
     client: &Client,
     url: &str,
@@ -224,6 +230,9 @@ pub async fn download_binary(
 }
 
 /// Calculate SHA256 checksum of a file
+/// Note: Used for binary update verification, which is handled by signaged-updater.
+/// Kept for potential future use.
+#[allow(dead_code)]
 pub async fn calculate_checksum(file_path: &str) -> Result<String, Box<dyn std::error::Error>> {
     use sha2::{Sha256, Digest};
     use tokio::fs::File;

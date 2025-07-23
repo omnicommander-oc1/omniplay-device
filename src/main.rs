@@ -64,6 +64,8 @@ async fn acknowledge_layout_update(client: &Client, config: &Config) -> Result<(
     Ok(())
 }
 
+
+
 /// Kill any existing MPV processes to prevent conflicts
 async fn cleanup_mpv_processes() -> Result<(), Box<dyn Error>> {
     println!("🧹 Cleaning up any existing MPV processes...");
@@ -276,6 +278,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     
                     mpv = start_mpv_with_rotation(rotation_degrees).await?;
                     println!("🎬 MPV restarted with new playlist and rotation: {} degrees", rotation_degrees);
+                    
+                    // Note: Updates are already acknowledged in process_schedule_response()
+                    println!("📋 Content update acknowledgment already sent during schedule processing")
                 } else {
                     println!("📋 No content changes needed");
                 }
@@ -629,7 +634,7 @@ async fn process_schedule_response(
     println!("  Next playlist: {:?}", data.next_playlist_id);
     println!("  Fallback playlist: {:?}", data.fallback_playlist);
     
-    // Check if we need to update content
+    // Check if we need to update content (playlist or content changes)
     let needs_content_update = playlist_changed || 
                               schedule_response.update_flags.playlist_update_needed ||
                               schedule_response.update_flags.content_update_needed;
@@ -646,15 +651,29 @@ async fn process_schedule_response(
         let updated = sync(client, config).await?;
         update_videos(client, config, data, updated).await?;
         
-        // Acknowledge the updates
-        acknowledge_updates(client, config, &schedule_response.update_flags).await?;
-        
         content_updated = true;
         mpv_restart_needed = true; // Content changes require MPV restart
         println!("✅ Content successfully updated");
     } else {
         println!("📋 No content update needed - playlist: {:?}, flags: {:?}", 
                 data.current_playlist, schedule_response.update_flags);
+    }
+    
+    // Check if we need to acknowledge any updates (content, playlist, or schedule)
+    let any_update_needed = schedule_response.update_flags.playlist_update_needed ||
+                           schedule_response.update_flags.schedule_update_needed ||
+                           schedule_response.update_flags.content_update_needed;
+                           
+    if any_update_needed {
+        println!("📡 Some updates needed acknowledgment: playlist={}, schedule={}, content={}", 
+                schedule_response.update_flags.playlist_update_needed,
+                schedule_response.update_flags.schedule_update_needed,
+                schedule_response.update_flags.content_update_needed);
+                
+        // Acknowledge all the updates we processed
+        acknowledge_updates(client, config, &schedule_response.update_flags).await?;
+    } else {
+        println!("📋 No updates needed acknowledgment");
     }
     
     // Check for layout/rotation changes
@@ -747,31 +766,67 @@ async fn acknowledge_updates(
     config: &Config,
     update_flags: &util::ClientUpdateFlagsResponse,
 ) -> Result<(), Box<dyn Error>> {
-    if !update_flags.playlist_update_needed && 
-       !update_flags.schedule_update_needed && 
-       !update_flags.content_update_needed {
-        return Ok(()); // Nothing to acknowledge
+    // Check which flags need acknowledgment
+    let playlist_needs_ack = update_flags.playlist_update_needed;
+    let schedule_needs_ack = update_flags.schedule_update_needed;
+    let content_needs_ack = update_flags.content_update_needed;
+    
+    if !playlist_needs_ack && !schedule_needs_ack && !content_needs_ack {
+        println!("📋 No flags need acknowledgment, skipping");
+        return Ok(());
     }
     
     let url = format!("{}/client-acknowledge-updates/{}", config.url, config.id);
+    println!("📡 Acknowledging updates to: {}", url);
+    println!("🔔 Flags to acknowledge: playlist={}, schedule={}, content={}", 
+             playlist_needs_ack, schedule_needs_ack, content_needs_ack);
     
-    let payload = serde_json::json!({
-        "playlist_updated": update_flags.playlist_update_needed,
-        "schedule_updated": update_flags.schedule_update_needed,
-        "content_updated": update_flags.content_update_needed
-    });
+    // Build payload - only include fields for flags that were true
+    let mut payload = serde_json::Map::new();
+    
+    if playlist_needs_ack {
+        payload.insert("playlist_updated".to_string(), serde_json::Value::Bool(true));
+        println!("✅ Will acknowledge playlist_update_needed=true -> playlist_updated=true");
+    }
+    
+    if schedule_needs_ack {
+        payload.insert("schedule_updated".to_string(), serde_json::Value::Bool(true));
+        println!("✅ Will acknowledge schedule_update_needed=true -> schedule_updated=true");
+    }
+    
+    if content_needs_ack {
+        payload.insert("content_updated".to_string(), serde_json::Value::Bool(true));
+        println!("✅ Will acknowledge content_update_needed=true -> content_updated=true");
+    }
+    
+    let payload_value = serde_json::Value::Object(payload);
+    println!("📦 Acknowledgment payload: {}", payload_value);
     
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
-        .json(&payload)
+        .json(&payload_value)
         .send()
         .await?;
-    
-    if response.status().is_success() {
-        println!("Successfully acknowledged updates");
+
+    let status = response.status();
+    if status.is_success() {
+        println!("✅ Successfully acknowledged updates to server");
+        
+        // Log what we expect to happen on the server side
+        if playlist_needs_ack {
+            println!("🔄 Server should set playlist_update_needed=false");
+        }
+        if schedule_needs_ack {
+            println!("🔄 Server should set schedule_update_needed=false");
+        }
+        if content_needs_ack {
+            println!("🔄 Server should set content_update_needed=false");
+        }
     } else {
-        println!("Failed to acknowledge updates: {}", response.status());
+        let response_text = response.text().await.unwrap_or_else(|_| "Failed to read response".to_string());
+        println!("❌ Failed to acknowledge updates: {} - {}", status, response_text);
+        return Err(format!("Server returned error: {} - {}", status, response_text).into());
     }
     
     Ok(())
