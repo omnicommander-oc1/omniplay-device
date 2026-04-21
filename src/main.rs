@@ -330,17 +330,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn Error>> {
-    let mut interval = time::interval(Duration::from_secs(1));
+    println!("Waiting for API at {}/health ...", config.url);
+    let mut interval = time::interval(Duration::from_secs(5));
     loop {
         let res = client.get(format!("{}/health", config.url)).send().await;
-        if let Ok(response) = res {
-            match response.status() {
-                StatusCode::OK => break,
-                StatusCode::INTERNAL_SERVER_ERROR => {
-                    println!("Server error. Retrying in 2 minutes...");
-                    time::interval(Duration::from_secs(120)).tick().await;
+        match res {
+            Ok(response) => {
+                let status = response.status();
+                match status {
+                    StatusCode::OK => {
+                        println!("✅ API is available");
+                        break;
+                    }
+                    StatusCode::INTERNAL_SERVER_ERROR => {
+                        println!("Server error. Retrying in 2 minutes...");
+                        tokio::time::sleep(Duration::from_secs(120)).await;
+                    }
+                    _ => {
+                        println!("⚠️ Health check returned {}, retrying...", status);
+                    }
                 }
-                _ => (),
+            }
+            Err(e) => {
+                println!("⚠️ Health check failed: {}, retrying...", e);
             }
         }
         interval.tick().await;
