@@ -95,7 +95,7 @@ impl Video {
     }
 
     pub fn in_whitelist(&self) -> bool {
-        let whitelist = ["s3.amazonaws.com"];
+        let whitelist = ["s3.amazonaws.com", "omnicommando.com"];
 
         for url in whitelist {
             if self.asset_url.contains(url) {

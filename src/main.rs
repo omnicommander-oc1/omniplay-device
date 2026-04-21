@@ -42,7 +42,7 @@ fn get_rotation_for_device(rotation: i32) -> i32 {
 
 /// Acknowledge layout update to the API
 async fn acknowledge_layout_update(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
-    let url = format!("{}/client-acknowledge-updates/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/acknowledge-updates", config.url, config.id);
     
     let payload = serde_json::json!({
         "layout_updated": true
@@ -428,7 +428,7 @@ async fn get_new_key(client: &Client, config: &mut Config) -> Result<Apikey, Box
 
 async fn sync(client: &Client, config: &Config) -> Result<Option<DateTime<Utc>>, Box<dyn Error>> {
     let res: Updated = client
-        .get(format!("{}/sync/{}", config.url, config.id))
+        .get(format!("{}/api/omniplay/device-checkin/{}/sync", config.url, config.id))
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await?
@@ -442,7 +442,7 @@ async fn receive_videos(
     client: &Client,
     config: &mut Config,
 ) -> Result<Vec<Video>, Box<dyn Error>> {
-    let url = format!("{}/recieve-videos/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/videos", config.url, config.id);
 
     let new_key = get_new_key(client, config).await?;
     let auth_token = new_key.key;
@@ -517,7 +517,7 @@ async fn check_timeline_schedule(
     client: &Client,
     config: &Config,
 ) -> Result<ClientTimelineScheduleResponse, Box<dyn Error>> {
-    let url = format!("{}/client-timeline-schedule/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/timeline-schedule", config.url, config.id);
     
     let response = client
         .get(&url)
@@ -775,7 +775,7 @@ async fn acknowledge_updates(
         return Ok(());
     }
     
-    let url = format!("{}/client-acknowledge-updates/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/acknowledge-updates", config.url, config.id);
     println!("📡 Acknowledging updates to: {}", url);
     println!("🔔 Flags to acknowledge: playlist={}, schedule={}, content={}", 
              playlist_needs_ack, schedule_needs_ack, content_needs_ack);
