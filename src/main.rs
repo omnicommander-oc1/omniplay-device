@@ -135,12 +135,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     let mut config = Config::new();
     let mut data = Data::new();
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .build()?;
 
     // Load the configs
     println!("Loading configuration...");
     config.load().await?;
-    println!("Loaded configuration: {:?}", config);
+    println!("Loaded configuration for device: {}", config.id);
     println!("Loading data...");
     data.load().await?;
 
@@ -414,10 +417,8 @@ async fn get_new_key(client: &Client, config: &mut Config) -> Result<Apikey, Box
         .text()
         .await?;
 
-    println!("Raw API response: {}", res_text);
-
     let res: Apikey = serde_json::from_str(&res_text)?;
-    println!("Received new API key: {}", res.key);
+    println!("Received new API key");
 
     config.key = Some(res.key.clone());
     config.write().await?;
@@ -477,9 +478,7 @@ async fn update_videos(
     data.videos = receive_videos(client, config).await?;
     data.videos.sort_by_key(|v| v.asset_order);
 
-    println!("{:#?}",  data.videos);
-    let message = "==========================================================  Reduced";
-    println!("{}", message);
+    println!("Playlist updated: {} videos", data.videos.len());
     data.last_update = updated;
     data.update_content= Some(false);
     data.write().await?;

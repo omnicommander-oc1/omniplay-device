@@ -140,10 +140,13 @@ pub async fn run_command(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Writes json from `T` into `path`
+/// Writes json from `T` into `path` atomically (write to temp file, then rename)
 pub async fn write_json<T: Serialize>(json: &T, path: &str) -> Result<(), Box<dyn Error>> {
-    let mut file = File::create(path).await?;
+    let temp_path = format!("{}.tmp", path);
+    let mut file = File::create(&temp_path).await?;
     file.write_all(&serde_json::to_vec_pretty(&json)?).await?;
+    file.flush().await?;
+    fs::rename(&temp_path, path).await?;
 
     Ok(())
 }
@@ -168,13 +171,17 @@ pub async fn cleanup_directory(dir: &str) -> Result<(), Box<dyn Error>> {
     while let Some(entry) = dir_entries.next_entry().await? {
         let path = entry.path();
         if path.is_file() {
-            let filename = path.file_name().unwrap().to_string_lossy().to_string();
+            let filename = match path.file_name() {
+                Some(name) => name.to_string_lossy().to_string(),
+                None => continue,
+            };
             // Ignore playlist.txt and data.json
-            println!("Getting Files: {:?}", filename);
             if filename != "playlist.txt" && filename != "data.json" {
-                // Delete the file if it's not in playlist.txt
-                if !playlist_files.iter().any(|f| f.contains(&filename)) {
-                    println!("Deleting file: {}", filename);
+                // Delete the file if it's not in playlist.txt (exact path match)
+                if !playlist_files.iter().any(|f| {
+                    Path::new(f.trim()).file_name().map_or(false, |n| n == filename.as_str())
+                }) {
+                    println!("Deleting file not in playlist: {}", filename);
                     fs::remove_file(path).await?;
                 }
             }
