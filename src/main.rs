@@ -214,6 +214,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         if mpv_restart_needed {
                             println!("🔄 MPV needs restart due to changes. Restarting...");
                             mpv.kill().await?;
+                            mpv.wait().await.ok();
                             
                             // Determine the correct rotation based on current rotation setting
                             let rotation_degrees = if let Some(rotation) = data.current_rotation {
@@ -271,7 +272,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     // Force MPV restart to pick up new playlist immediately
                     println!("🔄 Restarting MPV to load new playlist...");
                     mpv.kill().await?;
-                    
+                    mpv.wait().await.ok();
+
                     // Use current rotation when restarting MPV
                     let rotation_degrees = if let Some(rotation) = data.current_rotation {
                         get_rotation_for_device(rotation)
@@ -311,11 +313,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             _ = terminate.recv() => {
                 println!("Received SIGTERM, terminating...");
                 mpv.kill().await?;
+                mpv.wait().await.ok();
                 break;
             }
             _ = interrupt.recv() => {
                 println!("Received SIGINT, terminating...");
                 mpv.kill().await?;
+                mpv.wait().await.ok();
                 break;
             }
             _ = hup.recv() => {
@@ -479,7 +483,6 @@ async fn receive_videos(
     }
 }
 
-// Removed: receive_videos_for_playlist - using legacy endpoint instead
 
 async fn update_videos(
     client: &Client,
@@ -518,7 +521,6 @@ async fn update_videos(
     Ok(())
 }
 
-// Removed: update_videos_for_playlist - using legacy endpoint instead
 
 // ============================================================================
 // NEW TIMELINE SCHEDULE FUNCTIONS
