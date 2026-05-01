@@ -147,32 +147,55 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Loading data...");
     data.load().await?;
 
-    let _ = wait_for_api(&client, &config).await?;
+    // Check if we have cached content that allows offline playback
+    let has_cached = has_local_playlist().await;
 
-    println!("API key is not set. Requesting a new API key...");
-    config.key = Some(get_new_key(&client, &mut config).await?.key);
-    config.write().await?;
+    let api_available = if has_cached {
+        println!("📦 Cached content found. Attempting API connection (30s timeout)...");
+        match wait_for_api_with_timeout(&client, &config, Duration::from_secs(30)).await {
+            Ok(_) => {
+                println!("✅ API available, proceeding with online mode");
+                true
+            }
+            Err(e) => {
+                println!("⚠️ {}", e);
+                println!("▶️ Starting playback with cached content");
+                false
+            }
+        }
+    } else {
+        println!("🌐 No cached content — waiting for API (first boot)...");
+        let _ = wait_for_api(&client, &config).await?;
+        true
+    };
 
-    // Get the videos if we've never updated
-    if data.last_update.is_none() {
-        let updated = sync(&client, &config).await?;
-        update_videos(&client, &mut config, &mut data, updated).await?;
-        println!("Data Updated: {:?}", updated);
+    if api_available {
+        // Online startup: refresh key, sync content, fetch rotation
+        println!("Requesting a new API key...");
+        config.key = Some(get_new_key(&client, &mut config).await?.key);
+        config.write().await?;
+
+        // Get the videos if we've never updated
+        if data.last_update.is_none() {
+            let updated = sync(&client, &config).await?;
+            update_videos(&client, &mut config, &mut data, updated).await?;
+            println!("Data Updated: {:?}", updated);
+        }
+        if data.update_content.unwrap_or(false) {
+            let updated = sync(&client, &config).await?;
+            update_videos(&client, &mut config, &mut data, updated).await?;
+            println!("Data Updated: {:?}", updated);
+        }
+
+        // Get initial rotation from API before starting MPV
+        let initial_rotation = get_initial_rotation(&client, &config).await;
+        data.current_rotation = Some(initial_rotation);
+        data.rotation_applied = Some(initial_rotation);
+        data.write().await?;
+    } else {
+        // Offline startup: use rotation from last session stored in data.json
+        println!("📦 Using cached rotation: {:?} degrees", data.rotation_applied.unwrap_or(0));
     }
-    if data.update_content.unwrap_or(false) {
-        let updated = sync(&client, &config).await?;
-        update_videos(&client, &mut config, &mut data, updated).await?;
-        println!("Data Updated: {:?}", updated);
-    }
-    
-
-    // Get initial rotation from API before starting MPV
-    let initial_rotation = get_initial_rotation(&client, &config).await;
-    
-    // Store the initial rotation in data for future use
-    data.current_rotation = Some(initial_rotation);
-    data.rotation_applied = Some(initial_rotation);
-    data.write().await?;
     
     // Initialize with default polling interval
     let mut poll_interval = Duration::from_secs(60);
@@ -181,7 +204,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut hup = signal(SignalKind::hangup())?;
 
-    let mut mpv = start_mpv_with_rotation(initial_rotation).await?;
+    let effective_rotation = data.rotation_applied.unwrap_or(0);
+    let mut mpv = start_mpv_with_rotation(effective_rotation).await?;
 
     loop {
         tokio::select! {
@@ -193,70 +217,97 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 match check_timeline_schedule(&client, &config).await {
                     Ok(schedule_response) => {
                         println!("✅ Using timeline schedule system");
-                        
-                        // Process the schedule response
-                        let (content_update_needed, mpv_restart_needed) = process_schedule_response(
-                            &client, 
-                            &mut config, 
-                            &mut data, 
-                            schedule_response.clone()
-                        ).await?;
-                        
-                        // Calculate optimal polling interval based on schedule timing
-                        let new_interval = calculate_poll_interval(&schedule_response);
-                        if new_interval != poll_interval {
-                            poll_interval = new_interval;
-                            interval = time::interval(poll_interval);
-                            println!("📊 Updated polling interval to {:?}", poll_interval);
-                        }
 
-                        // If MPV needs restart, restart it
-                        if mpv_restart_needed {
-                            println!("🔄 MPV needs restart due to changes. Restarting...");
-                            mpv.kill().await?;
-                            mpv.wait().await.ok();
-                            
-                            // Determine the correct rotation based on current rotation setting
-                            let rotation_degrees = if let Some(rotation) = data.current_rotation {
-                                get_rotation_for_device(rotation)
-                            } else {
-                                0 // Default to no rotation
-                            };
-                            
-                            mpv = start_mpv_with_rotation(rotation_degrees).await?;
-                            println!("🎬 MPV restarted with rotation: {} degrees", rotation_degrees);
+                        // Process the schedule response — wrapped so a
+                        // mid-request network drop doesn't crash the process
+                        match process_schedule_response(
+                            &client,
+                            &mut config,
+                            &mut data,
+                            schedule_response.clone()
+                        ).await {
+                            Ok((content_update_needed, mpv_restart_needed)) => {
+                                // Calculate optimal polling interval based on schedule timing
+                                let new_interval = calculate_poll_interval(&schedule_response);
+                                if new_interval != poll_interval {
+                                    poll_interval = new_interval;
+                                    interval = time::interval(poll_interval);
+                                    println!("📊 Updated polling interval to {:?}", poll_interval);
+                                }
+
+                                // If MPV needs restart, restart it
+                                if mpv_restart_needed {
+                                    println!("🔄 MPV needs restart due to changes. Restarting...");
+                                    mpv.kill().await?;
+                                    mpv.wait().await.ok();
+
+                                    let rotation_degrees = if let Some(rotation) = data.current_rotation {
+                                        get_rotation_for_device(rotation)
+                                    } else {
+                                        0
+                                    };
+
+                                    mpv = start_mpv_with_rotation(rotation_degrees).await?;
+                                    println!("🎬 MPV restarted with rotation: {} degrees", rotation_degrees);
+                                }
+                                content_updated = content_update_needed;
+                            }
+                            Err(e) => {
+                                println!("⚠️ Failed to process schedule response: {}. Continuing with cached content.", e);
+                            }
                         }
-                        content_updated = content_update_needed;
                     }
                     Err(err) => {
                         println!("⚠️ Schedule check failed: {}, falling back to legacy sync", err);
-                        
-                        // Fall back to legacy sync system
-                        let updated = sync(&client, &config).await?;
-                        match (updated, data.last_update, data.update_content) {
-                            (Some(updated), Some(last_update), _) if updated > last_update => {
-                                println!("🔄 Legacy update detected");
-                                update_videos(&client, &mut config, &mut data, Some(updated)).await?;
-                                content_updated = true;
+
+                        // Fall back to legacy sync system — wrapped so API
+                        // failures don't crash the process (offline resilience)
+                        match sync(&client, &config).await {
+                            Ok(updated) => {
+                                match (updated, data.last_update, data.update_content) {
+                                    (Some(updated), Some(last_update), _) if updated > last_update => {
+                                        println!("🔄 Legacy update detected");
+                                        if let Err(e) = update_videos(&client, &mut config, &mut data, Some(updated)).await {
+                                            println!("⚠️ Failed to update videos: {}", e);
+                                        } else {
+                                            content_updated = true;
+                                        }
+                                    }
+                                    (Some(updated), None, _) => {
+                                        println!("🔄 Legacy initial update");
+                                        if let Err(e) = update_videos(&client, &mut config, &mut data, Some(updated)).await {
+                                            println!("⚠️ Failed to update videos: {}", e);
+                                        } else {
+                                            content_updated = true;
+                                        }
+                                    }
+                                    _ => {
+                                        println!("📋 No legacy updates available");
+                                    }
+                                }
+
+                                // Check legacy update_content flag
+                                if data.update_content.unwrap_or(false) {
+                                    match sync(&client, &config).await {
+                                        Ok(updated) => {
+                                            if let Err(e) = update_videos(&client, &mut config, &mut data, updated).await {
+                                                println!("⚠️ Failed to update videos: {}", e);
+                                            } else {
+                                                content_updated = true;
+                                                println!("🔄 Legacy content flag update");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            println!("⚠️ Legacy content sync failed: {}. Continuing with cached content.", e);
+                                        }
+                                    }
+                                }
                             }
-                            (Some(updated), None, _) => {
-                                println!("🔄 Legacy initial update");
-                                update_videos(&client, &mut config, &mut data, Some(updated)).await?;
-                                content_updated = true;
-                            }
-                            _ => {
-                                println!("📋 No legacy updates available");
+                            Err(sync_err) => {
+                                println!("⚠️ Legacy sync also failed: {}. Continuing with cached content.", sync_err);
                             }
                         }
-                        
-                        // Check legacy update_content flag
-                        if data.update_content.unwrap_or(false) {
-                            let updated = sync(&client, &config).await?;
-                            update_videos(&client, &mut config, &mut data, updated).await?;
-                            content_updated = true;
-                            println!("🔄 Legacy content flag update");
-                        }
-                        
+
                         // Use default polling for legacy fallback
                         if poll_interval != Duration::from_secs(20) {
                             poll_interval = Duration::from_secs(20);
@@ -333,6 +384,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Check if a non-empty playlist.txt exists locally, meaning the device
+/// has cached content from a previous session and can play offline.
+async fn has_local_playlist() -> bool {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    let playlist_path = format!("{}/.local/share/signage/playlist.txt", home);
+    match tokio::fs::metadata(&playlist_path).await {
+        Ok(metadata) => metadata.len() > 0,
+        Err(_) => false,
+    }
+}
+
 async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn Error>> {
     println!("Waiting for API at {}/health ...", config.url);
     let mut interval = time::interval(Duration::from_secs(5));
@@ -362,6 +427,45 @@ async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn 
         interval.tick().await;
     }
     Ok(true)
+}
+
+/// Like wait_for_api but gives up after `timeout` instead of blocking forever.
+/// Used when the device has cached content and can fall back to offline playback.
+async fn wait_for_api_with_timeout(
+    client: &Client,
+    config: &Config,
+    timeout: Duration,
+) -> Result<bool, Box<dyn Error>> {
+    println!("Waiting for API at {}/health (timeout: {:?})...", config.url, timeout);
+    let start = tokio::time::Instant::now();
+    let mut interval = time::interval(Duration::from_secs(5));
+    loop {
+        if start.elapsed() >= timeout {
+            return Err("API connection timed out — switching to offline mode".into());
+        }
+        let res = client.get(format!("{}/health", config.url)).send().await;
+        match res {
+            Ok(response) => {
+                let status = response.status();
+                match status {
+                    StatusCode::OK => {
+                        println!("✅ API is available");
+                        return Ok(true);
+                    }
+                    StatusCode::INTERNAL_SERVER_ERROR => {
+                        println!("Server error. Retrying...");
+                    }
+                    _ => {
+                        println!("⚠️ Health check returned {}, retrying...", status);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("⚠️ Health check failed: {}, retrying...", e);
+            }
+        }
+        interval.tick().await;
+    }
 }
 
 /// Fetch the initial rotation setting from the API
