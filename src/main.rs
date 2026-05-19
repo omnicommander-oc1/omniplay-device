@@ -3,7 +3,6 @@ use config::Config;
 use data::Data;
 use reqwest::{Client, StatusCode};
 use std::{boxed::Box, error::Error, path::Path};
-use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{self, Duration};
@@ -603,24 +602,22 @@ async fn update_videos(
     data.write().await?;
     let home = std::env::var("HOME")?;
 
-    if Path::new(&format!("{home}/.local/share/signage/playlist.txt")).try_exists()? {
-        tokio::fs::remove_file(format!("{home}/.local/share/signage/playlist.txt")).await?;
-    }
-
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(format!("{home}/.local/share/signage/playlist.txt"))
-        .await?;
-
+    let mut contents = String::new();
     for video in data.videos.clone() {
         if !video.in_whitelist() {
             continue;
         }
         let file_path = video.download(client).await?;
-        file.write_all(format!("{}\n", file_path).as_bytes())
-            .await?;
+        contents.push_str(&file_path);
+        contents.push('\n');
     }
+
+    // Atomic write so a crash mid-rebuild can't leave a partial playlist.txt.
+    let playlist_path = format!("{home}/.local/share/signage/playlist.txt");
+    let temp_path = format!("{playlist_path}.tmp");
+    tokio::fs::write(&temp_path, contents).await?;
+    tokio::fs::rename(&temp_path, &playlist_path).await?;
+
     cleanup_directory(&format!("{}/.local/share/signage", home)).await?;
     Ok(())
 }
